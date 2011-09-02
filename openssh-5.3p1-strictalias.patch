@@ -1,0 +1,12 @@
+diff -urN openssh-5.3p1/configure.ac openssh-5.4p1/configure.ac
+--- openssh-5.3p1/configure.ac	2009-09-11 06:56:08.000000000 +0200
++++ openssh-5.4p1/configure.ac	2010-03-05 05:04:35.000000000 +0100
+@@ -108,7 +108,7 @@
+ 		     ;;
+ 		2.*) no_attrib_nonnull=1 ;;
+ 		3.*) CFLAGS="$CFLAGS -Wsign-compare -Wformat-security" ;;
+-		4.*) CFLAGS="$CFLAGS -Wsign-compare -Wno-pointer-sign -Wformat-security" ;;
++		4.*) CFLAGS="$CFLAGS -Wsign-compare -Wno-pointer-sign -Wformat-security -fno-strict-aliasing" ;;
+ 		*) ;;
+ 	esac
+ 

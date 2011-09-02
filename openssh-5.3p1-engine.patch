@@ -1,0 +1,9 @@
+--- openssh-5.2p1/openbsd-compat/openssl-compat.c~	2010-01-27 17:36:29.000000000 -0500
++++ openssh-5.2p1/openbsd-compat/openssl-compat.c	2010-01-28 10:52:53.000000000 -0500
+@@ -58,5 +58,6 @@
+ 	/* Enable use of crypto hardware */
+ 	ENGINE_load_builtin_engines();
+ 	ENGINE_register_all_complete();
++	OPENSSL_config(NULL);
+ }
+ #endif

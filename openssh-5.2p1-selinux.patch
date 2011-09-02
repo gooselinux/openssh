@@ -1,0 +1,394 @@
+diff -up openssh-5.2p1/auth1.c.selinux openssh-5.2p1/auth1.c
+--- openssh-5.2p1/auth1.c.selinux	2008-07-09 12:54:05.000000000 +0200
++++ openssh-5.2p1/auth1.c	2009-08-11 22:43:07.918183730 +0200
+@@ -392,6 +392,9 @@ do_authentication(Authctxt *authctxt)
+ {
+ 	u_int ulen;
+ 	char *user, *style = NULL;
++#ifdef WITH_SELINUX
++	char *role=NULL;
++#endif
+ 
+ 	/* Get the name of the user that we wish to log in as. */
+ 	packet_read_expect(SSH_CMSG_USER);
+@@ -400,11 +403,25 @@ do_authentication(Authctxt *authctxt)
+ 	user = packet_get_string(&ulen);
+ 	packet_check_eom();
+ 
++#ifdef WITH_SELINUX
++	if ((role = strchr(user, '/')) != NULL)
++		*role++ = '\0';
++#endif
++
+ 	if ((style = strchr(user, ':')) != NULL)
+ 		*style++ = '\0';
++#ifdef WITH_SELINUX
++	else
++		if (role && (style = strchr(role, ':')) != NULL)
++			*style++ = '\0';
++#endif
++			
+ 
+ 	authctxt->user = user;
+ 	authctxt->style = style;
++#ifdef WITH_SELINUX
++	authctxt->role = role;
++#endif
+ 
+ 	/* Verify that the user is a valid user. */
+ 	if ((authctxt->pw = PRIVSEP(getpwnamallow(user))) != NULL)
+diff -up openssh-5.2p1/auth2.c.selinux openssh-5.2p1/auth2.c
+--- openssh-5.2p1/auth2.c.selinux	2008-11-05 06:20:46.000000000 +0100
++++ openssh-5.2p1/auth2.c	2009-08-11 22:43:07.919756192 +0200
+@@ -216,6 +216,9 @@ input_userauth_request(int type, u_int32
+ 	Authctxt *authctxt = ctxt;
+ 	Authmethod *m = NULL;
+ 	char *user, *service, *method, *style = NULL;
++#ifdef WITH_SELINUX
++	char *role = NULL;
++#endif
+ 	int authenticated = 0;
+ 
+ 	if (authctxt == NULL)
+@@ -227,6 +230,11 @@ input_userauth_request(int type, u_int32
+ 	debug("userauth-request for user %s service %s method %s", user, service, method);
+ 	debug("attempt %d failures %d", authctxt->attempt, authctxt->failures);
+ 
++#ifdef WITH_SELINUX
++	if ((role = strchr(user, '/')) != NULL)
++		*role++ = 0;
++#endif
++
+ 	if ((style = strchr(user, ':')) != NULL)
+ 		*style++ = 0;
+ 
+@@ -252,8 +260,15 @@ input_userauth_request(int type, u_int32
+ 		    use_privsep ? " [net]" : "");
+ 		authctxt->service = xstrdup(service);
+ 		authctxt->style = style ? xstrdup(style) : NULL;
+-		if (use_privsep)
++#ifdef WITH_SELINUX
++		authctxt->role = role ? xstrdup(role) : NULL;
++#endif
++		if (use_privsep) {
+ 			mm_inform_authserv(service, style);
++#ifdef WITH_SELINUX
++			mm_inform_authrole(role);
++#endif
++		}
+ 		userauth_banner();
+ 	} else if (strcmp(user, authctxt->user) != 0 ||
+ 	    strcmp(service, authctxt->service) != 0) {
+diff -up openssh-5.2p1/auth2-gss.c.selinux openssh-5.2p1/auth2-gss.c
+--- openssh-5.2p1/auth2-gss.c.selinux	2007-12-02 12:59:45.000000000 +0100
++++ openssh-5.2p1/auth2-gss.c	2009-08-11 22:43:07.921723295 +0200
+@@ -258,6 +258,7 @@ input_gssapi_mic(int type, u_int32_t ple
+ 	Authctxt *authctxt = ctxt;
+ 	Gssctxt *gssctxt;
+ 	int authenticated = 0;
++	char *micuser;
+ 	Buffer b;
+ 	gss_buffer_desc mic, gssbuf;
+ 	u_int len;
+@@ -270,7 +271,13 @@ input_gssapi_mic(int type, u_int32_t ple
+ 	mic.value = packet_get_string(&len);
+ 	mic.length = len;
+ 
+-	ssh_gssapi_buildmic(&b, authctxt->user, authctxt->service,
++#ifdef WITH_SELINUX
++	if (authctxt->role && (strlen(authctxt->role) > 0))
++		xasprintf(&micuser, "%s/%s", authctxt->user, authctxt->role);
++	else
++#endif
++		micuser = authctxt->user;
++	ssh_gssapi_buildmic(&b, micuser, authctxt->service,
+ 	    "gssapi-with-mic");
+ 
+ 	gssbuf.value = buffer_ptr(&b);
+@@ -282,6 +289,8 @@ input_gssapi_mic(int type, u_int32_t ple
+ 		logit("GSSAPI MIC check failed");
+ 
+ 	buffer_free(&b);
++	if (micuser != authctxt->user)
++		xfree(micuser);
+ 	xfree(mic.value);
+ 
+ 	authctxt->postponed = 0;
+diff -up openssh-5.2p1/auth2-hostbased.c.selinux openssh-5.2p1/auth2-hostbased.c
+--- openssh-5.2p1/auth2-hostbased.c.selinux	2008-07-17 10:57:19.000000000 +0200
++++ openssh-5.2p1/auth2-hostbased.c	2009-08-11 22:43:07.923721059 +0200
+@@ -106,7 +106,15 @@ userauth_hostbased(Authctxt *authctxt)
+ 	buffer_put_string(&b, session_id2, session_id2_len);
+ 	/* reconstruct packet */
+ 	buffer_put_char(&b, SSH2_MSG_USERAUTH_REQUEST);
+-	buffer_put_cstring(&b, authctxt->user);
++#ifdef WITH_SELINUX
++	if (authctxt->role) {
++		buffer_put_int(&b, strlen(authctxt->user)+strlen(authctxt->role)+1);
++		buffer_append(&b, authctxt->user, strlen(authctxt->user));
++		buffer_put_char(&b, '/');
++		buffer_append(&b, authctxt->role, strlen(authctxt->role));
++	} else 
++#endif
++		buffer_put_cstring(&b, authctxt->user);
+ 	buffer_put_cstring(&b, service);
+ 	buffer_put_cstring(&b, "hostbased");
+ 	buffer_put_string(&b, pkalg, alen);
+diff -up openssh-5.2p1/auth2-pubkey.c.selinux openssh-5.2p1/auth2-pubkey.c
+--- openssh-5.2p1/auth2-pubkey.c.selinux	2008-07-04 04:54:25.000000000 +0200
++++ openssh-5.2p1/auth2-pubkey.c	2009-08-11 22:43:07.925704588 +0200
+@@ -117,7 +117,15 @@ userauth_pubkey(Authctxt *authctxt)
+ 		}
+ 		/* reconstruct packet */
+ 		buffer_put_char(&b, SSH2_MSG_USERAUTH_REQUEST);
+-		buffer_put_cstring(&b, authctxt->user);
++#ifdef WITH_SELINUX
++		if (authctxt->role) {
++			buffer_put_int(&b, strlen(authctxt->user)+strlen(authctxt->role)+1);
++			buffer_append(&b, authctxt->user, strlen(authctxt->user));
++			buffer_put_char(&b, '/');
++			buffer_append(&b, authctxt->role, strlen(authctxt->role));
++		} else 
++#endif
++			buffer_put_cstring(&b, authctxt->user);
+ 		buffer_put_cstring(&b,
+ 		    datafellows & SSH_BUG_PKSERVICE ?
+ 		    "ssh-userauth" :
+diff -up openssh-5.2p1/auth.h.selinux openssh-5.2p1/auth.h
+--- openssh-5.2p1/auth.h.selinux	2008-11-05 06:20:46.000000000 +0100
++++ openssh-5.2p1/auth.h	2009-08-11 22:43:07.927199901 +0200
+@@ -58,6 +58,9 @@ struct Authctxt {
+ 	char		*service;
+ 	struct passwd	*pw;		/* set if 'valid' */
+ 	char		*style;
++#ifdef WITH_SELINUX
++	char		*role;
++#endif
+ 	void		*kbdintctxt;
+ 	void		*jpake_ctx;
+ #ifdef BSD_AUTH
+diff -up openssh-5.2p1/configure.ac.selinux openssh-5.2p1/configure.ac
+--- openssh-5.2p1/configure.ac.selinux	2009-02-16 05:37:03.000000000 +0100
++++ openssh-5.2p1/configure.ac	2009-08-11 22:43:07.930259052 +0200
+@@ -3335,6 +3335,7 @@ AC_ARG_WITH(selinux,
+ 		AC_CHECK_LIB(selinux, setexeccon, [ LIBSELINUX="-lselinux" ],
+ 		    AC_MSG_ERROR(SELinux support requires libselinux library))
+ 		SSHDLIBS="$SSHDLIBS $LIBSELINUX"
++		LIBS="$LIBS $LIBSELINUX"
+ 		AC_CHECK_FUNCS(getseuserbyname get_default_context_with_level)
+ 		LIBS="$save_LIBS"
+ 	fi ]
+diff -up openssh-5.2p1/monitor.c.selinux openssh-5.2p1/monitor.c
+--- openssh-5.2p1/monitor.c.selinux	2009-02-14 06:33:31.000000000 +0100
++++ openssh-5.2p1/monitor.c	2009-08-11 22:43:07.933623092 +0200
+@@ -135,6 +135,9 @@ int mm_answer_sign(int, Buffer *);
+ int mm_answer_pwnamallow(int, Buffer *);
+ int mm_answer_auth2_read_banner(int, Buffer *);
+ int mm_answer_authserv(int, Buffer *);
++#ifdef WITH_SELINUX
++int mm_answer_authrole(int, Buffer *);
++#endif
+ int mm_answer_authpassword(int, Buffer *);
+ int mm_answer_bsdauthquery(int, Buffer *);
+ int mm_answer_bsdauthrespond(int, Buffer *);
+@@ -211,6 +214,9 @@ struct mon_table mon_dispatch_proto20[] 
+     {MONITOR_REQ_SIGN, MON_ONCE, mm_answer_sign},
+     {MONITOR_REQ_PWNAM, MON_ONCE, mm_answer_pwnamallow},
+     {MONITOR_REQ_AUTHSERV, MON_ONCE, mm_answer_authserv},
++#ifdef WITH_SELINUX
++    {MONITOR_REQ_AUTHROLE, MON_ONCE, mm_answer_authrole},
++#endif
+     {MONITOR_REQ_AUTH2_READ_BANNER, MON_ONCE, mm_answer_auth2_read_banner},
+     {MONITOR_REQ_AUTHPASSWORD, MON_AUTH, mm_answer_authpassword},
+ #ifdef USE_PAM
+@@ -680,6 +686,9 @@ mm_answer_pwnamallow(int sock, Buffer *m
+ 	else {
+ 		/* Allow service/style information on the auth context */
+ 		monitor_permit(mon_dispatch, MONITOR_REQ_AUTHSERV, 1);
++#ifdef WITH_SELINUX
++		monitor_permit(mon_dispatch, MONITOR_REQ_AUTHROLE, 1);
++#endif
+ 		monitor_permit(mon_dispatch, MONITOR_REQ_AUTH2_READ_BANNER, 1);
+ 	}
+ 
+@@ -724,6 +733,25 @@ mm_answer_authserv(int sock, Buffer *m)
+ 	return (0);
+ }
+ 
++#ifdef WITH_SELINUX
++int
++mm_answer_authrole(int sock, Buffer *m)
++{
++	monitor_permit_authentications(1);
++
++	authctxt->role = buffer_get_string(m, NULL);
++	debug3("%s: role=%s",
++	    __func__, authctxt->role);
++
++	if (strlen(authctxt->role) == 0) {
++		xfree(authctxt->role);
++		authctxt->role = NULL;
++	}
++
++	return (0);
++}
++#endif
++
+ int
+ mm_answer_authpassword(int sock, Buffer *m)
+ {
+@@ -1102,7 +1130,7 @@ static int
+ monitor_valid_userblob(u_char *data, u_int datalen)
+ {
+ 	Buffer b;
+-	char *p;
++	char *p, *r;
+ 	u_int len;
+ 	int fail = 0;
+ 
+@@ -1128,6 +1156,8 @@ monitor_valid_userblob(u_char *data, u_i
+ 	if (buffer_get_char(&b) != SSH2_MSG_USERAUTH_REQUEST)
+ 		fail++;
+ 	p = buffer_get_string(&b, NULL);
++	if ((r = strchr(p, '/')) != NULL)
++		*r = '\0';
+ 	if (strcmp(authctxt->user, p) != 0) {
+ 		logit("wrong user name passed to monitor: expected %s != %.100s",
+ 		    authctxt->user, p);
+@@ -1159,7 +1189,7 @@ monitor_valid_hostbasedblob(u_char *data
+     char *chost)
+ {
+ 	Buffer b;
+-	char *p;
++	char *p, *r;
+ 	u_int len;
+ 	int fail = 0;
+ 
+@@ -1176,6 +1206,8 @@ monitor_valid_hostbasedblob(u_char *data
+ 	if (buffer_get_char(&b) != SSH2_MSG_USERAUTH_REQUEST)
+ 		fail++;
+ 	p = buffer_get_string(&b, NULL);
++	if ((r = strchr(p, '/')) != NULL)
++		*r = '\0';
+ 	if (strcmp(authctxt->user, p) != 0) {
+ 		logit("wrong user name passed to monitor: expected %s != %.100s",
+ 		    authctxt->user, p);
+diff -up openssh-5.2p1/monitor.h.selinux openssh-5.2p1/monitor.h
+--- openssh-5.2p1/monitor.h.selinux	2008-11-05 06:20:46.000000000 +0100
++++ openssh-5.2p1/monitor.h	2009-08-11 22:43:07.935612930 +0200
+@@ -31,6 +31,9 @@
+ enum monitor_reqtype {
+ 	MONITOR_REQ_MODULI, MONITOR_ANS_MODULI,
+ 	MONITOR_REQ_FREE, MONITOR_REQ_AUTHSERV,
++#ifdef WITH_SELINUX
++	MONITOR_REQ_AUTHROLE,
++#endif
+ 	MONITOR_REQ_SIGN, MONITOR_ANS_SIGN,
+ 	MONITOR_REQ_PWNAM, MONITOR_ANS_PWNAM,
+ 	MONITOR_REQ_AUTH2_READ_BANNER, MONITOR_ANS_AUTH2_READ_BANNER,
+diff -up openssh-5.2p1/monitor_wrap.c.selinux openssh-5.2p1/monitor_wrap.c
+--- openssh-5.2p1/monitor_wrap.c.selinux	2008-11-05 06:20:47.000000000 +0100
++++ openssh-5.2p1/monitor_wrap.c	2009-08-11 22:43:07.937212340 +0200
+@@ -297,6 +297,25 @@ mm_inform_authserv(char *service, char *
+ 	buffer_free(&m);
+ }
+ 
++/* Inform the privileged process about role */
++
++#ifdef WITH_SELINUX
++void
++mm_inform_authrole(char *role)
++{
++	Buffer m;
++
++	debug3("%s entering", __func__);
++
++	buffer_init(&m);
++	buffer_put_cstring(&m, role ? role : "");
++
++	mm_request_send(pmonitor->m_recvfd, MONITOR_REQ_AUTHROLE, &m);
++
++	buffer_free(&m);
++}
++#endif
++
+ /* Do the password authentication */
+ int
+ mm_auth_password(Authctxt *authctxt, char *password)
+diff -up openssh-5.2p1/monitor_wrap.h.selinux openssh-5.2p1/monitor_wrap.h
+--- openssh-5.2p1/monitor_wrap.h.selinux	2008-11-05 06:20:47.000000000 +0100
++++ openssh-5.2p1/monitor_wrap.h	2009-08-11 22:43:07.938268752 +0200
+@@ -41,6 +41,9 @@ int mm_is_monitor(void);
+ DH *mm_choose_dh(int, int, int);
+ int mm_key_sign(Key *, u_char **, u_int *, u_char *, u_int);
+ void mm_inform_authserv(char *, char *);
++#ifdef WITH_SELINUX
++void mm_inform_authrole(char *);
++#endif
+ struct passwd *mm_getpwnamallow(const char *);
+ char *mm_auth2_read_banner(void);
+ int mm_auth_password(struct Authctxt *, char *);
+diff -up openssh-5.2p1/openbsd-compat/port-linux.c.selinux openssh-5.2p1/openbsd-compat/port-linux.c
+--- openssh-5.2p1/openbsd-compat/port-linux.c.selinux	2008-03-26 21:27:21.000000000 +0100
++++ openssh-5.2p1/openbsd-compat/port-linux.c	2009-08-11 22:44:14.529196220 +0200
+@@ -30,11 +30,16 @@
+ #ifdef WITH_SELINUX
+ #include "log.h"
+ #include "port-linux.h"
++#include "key.h"
++#include "hostfile.h"
++#include "auth.h"
+ 
+ #include <selinux/selinux.h>
+ #include <selinux/flask.h>
+ #include <selinux/get_context_list.h>
+ 
++extern Authctxt *the_authctxt;
++
+ /* Wrapper around is_selinux_enabled() to log its return value once only */
+ int
+ ssh_selinux_enabled(void)
+@@ -53,23 +58,36 @@ ssh_selinux_enabled(void)
+ static security_context_t
+ ssh_selinux_getctxbyname(char *pwname)
+ {
+-	security_context_t sc;
+-	char *sename = NULL, *lvl = NULL;
+-	int r;
++	security_context_t sc = NULL;
++	char *sename, *lvl;
++	char *role = NULL;
++	int r = 0;
+ 
++	if (the_authctxt) 
++		role=the_authctxt->role;
+ #ifdef HAVE_GETSEUSERBYNAME
+-	if (getseuserbyname(pwname, &sename, &lvl) != 0)
+-		return NULL;
++	if ((r=getseuserbyname(pwname, &sename, &lvl)) != 0) {
++		sename = NULL;
++		lvl = NULL;
++	}
+ #else
+ 	sename = pwname;
+ 	lvl = NULL;
+ #endif
+ 
++	if (r == 0) {
+ #ifdef HAVE_GET_DEFAULT_CONTEXT_WITH_LEVEL
+-	r = get_default_context_with_level(sename, lvl, NULL, &sc);
++		if (role != NULL && role[0])
++			r = get_default_context_with_rolelevel(sename, role, lvl, NULL, &sc);
++		else
++			r = get_default_context_with_level(sename, lvl, NULL, &sc);
+ #else
+-	r = get_default_context(sename, NULL, &sc);
++		if (role != NULL && role[0])
++			r = get_default_context_with_role(sename, role, NULL, &sc);
++		else
++			r = get_default_context(sename, NULL, &sc);
+ #endif
++	}
+ 
+ 	if (r != 0) {
+ 		switch (security_getenforce()) {

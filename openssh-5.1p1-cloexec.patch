@@ -1,0 +1,87 @@
+diff -up openssh-5.3p1/channels.c.cloexec openssh-5.3p1/channels.c
+--- openssh-5.3p1/channels.c.cloexec	2010-01-25 17:25:58.000000000 +0100
++++ openssh-5.3p1/channels.c	2010-01-25 17:26:01.000000000 +0100
+@@ -60,6 +60,7 @@
+ #include <termios.h>
+ #include <unistd.h>
+ #include <stdarg.h>
++#include <fcntl.h>
+ 
+ #include "openbsd-compat/sys-queue.h"
+ #include "xmalloc.h"
+@@ -230,6 +231,18 @@ channel_register_fds(Channel *c, int rfd
+ 
+ 	/* XXX set close-on-exec -markus */
+ 
++	if (rfd != -1) {
++		fcntl(rfd, F_SETFD, FD_CLOEXEC);
++	}
++
++	if (wfd != -1 && wfd != rfd) {
++		fcntl(wfd, F_SETFD, FD_CLOEXEC);
++	}
++
++	if (efd != -1 && efd != rfd && efd != wfd) {
++		fcntl(efd, F_SETFD, FD_CLOEXEC);
++	}
++
+ 	c->rfd = rfd;
+ 	c->wfd = wfd;
+ 	c->sock = (rfd == wfd) ? rfd : -1;
+diff -up openssh-5.3p1/sshconnect2.c.cloexec openssh-5.3p1/sshconnect2.c
+--- openssh-5.3p1/sshconnect2.c.cloexec	2010-01-25 17:25:58.000000000 +0100
++++ openssh-5.3p1/sshconnect2.c	2010-01-25 17:26:01.000000000 +0100
+@@ -39,6 +39,7 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <unistd.h>
++#include <fcntl.h>
+ #if defined(HAVE_STRNVIS) && defined(HAVE_VIS_H)
+ #include <vis.h>
+ #endif
+@@ -1512,6 +1513,7 @@ ssh_keysign(Key *key, u_char **sigp, u_i
+ 		return -1;
+ 	}
+ 	if (pid == 0) {
++		fcntl(packet_get_connection_in(), F_SETFD, 0); /* keep the socket on exec */
+ 		permanently_drop_suid(getuid());
+ 		close(from[0]);
+ 		if (dup2(from[1], STDOUT_FILENO) < 0)
+diff -up openssh-5.3p1/sshconnect.c.cloexec openssh-5.3p1/sshconnect.c
+--- openssh-5.3p1/sshconnect.c.cloexec	2009-06-21 10:53:53.000000000 +0200
++++ openssh-5.3p1/sshconnect.c	2010-01-25 17:26:01.000000000 +0100
+@@ -38,6 +38,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <unistd.h>
++#include <fcntl.h>
+ 
+ #include "xmalloc.h"
+ #include "key.h"
+@@ -191,8 +192,11 @@ ssh_create_socket(int privileged, struct
+ 		return sock;
+ 	}
+ 	sock = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+-	if (sock < 0)
++	if (sock < 0) {
+ 		error("socket: %.100s", strerror(errno));
++		return -1;
++	}
++	fcntl(sock, F_SETFD, FD_CLOEXEC);
+ 
+ 	/* Bind the socket to an alternative local IP address */
+ 	if (options.bind_address == NULL)
+diff -up openssh-5.3p1/sshd.c.cloexec openssh-5.3p1/sshd.c
+--- openssh-5.3p1/sshd.c.cloexec	2010-01-25 17:25:55.000000000 +0100
++++ openssh-5.3p1/sshd.c	2010-01-25 18:29:23.000000000 +0100
+@@ -1756,6 +1756,10 @@ main(int ac, char **av)
+ 		    sock_in, sock_out, newsock, startup_pipe, config_s[0]);
+ 	}
+ 
++	/* set fd cloexec on io/sockets to avoid to forward them to childern */
++	fcntl(sock_out, F_SETFD, FD_CLOEXEC);
++	fcntl(sock_in, F_SETFD, FD_CLOEXEC);
++
+ 	/*
+ 	 * Disable the key regeneration alarm.  We will not regenerate the
+ 	 * key since we are no longer in a position to give it to anyone. We

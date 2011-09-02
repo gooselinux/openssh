@@ -1,0 +1,11 @@
+--- openssh-3.9p1/contrib/gnome-ssh-askpass2.c.keep-above	2003-11-21 13:48:56.000000000 +0100
++++ openssh-3.9p1/contrib/gnome-ssh-askpass2.c	2005-02-08 08:44:02.099739294 +0100
+@@ -119,6 +119,8 @@
+ 	g_signal_connect(G_OBJECT(entry), "activate",
+ 			 G_CALLBACK(ok_dialog), dialog);
+ 
++	gtk_window_set_keep_above(GTK_WINDOW(dialog), TRUE);
++
+ 	/* Grab focus */
+ 	gtk_widget_show_now(dialog);
+ 	if (grab_pointer) {

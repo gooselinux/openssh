@@ -1,0 +1,11 @@
+--- openssh-4.3p2/channels.c.no-v6only	2006-07-17 15:39:31.000000000 +0200
++++ openssh-4.3p2/channels.c	2006-08-08 12:44:51.000000000 +0200
+@@ -2794,7 +2794,7 @@
+ 				}
+ 			}
+ #ifdef IPV6_V6ONLY
+-			if (ai->ai_family == AF_INET6) {
++			if (x11_use_localhost && ai->ai_family == AF_INET6) {
+ 				int on = 1;
+ 				if (setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on)) < 0)
+ 					error("setsockopt IPV6_V6ONLY: %.100s", strerror(errno));

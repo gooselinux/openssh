@@ -1,0 +1,156 @@
+diff -up openssh-5.0p1/auth-pam.h.pam_selinux openssh-5.0p1/auth-pam.h
+--- openssh-5.0p1/auth-pam.h.pam_selinux	2004-09-11 14:17:26.000000000 +0200
++++ openssh-5.0p1/auth-pam.h	2008-04-30 14:25:28.000000000 +0200
+@@ -38,7 +38,7 @@ void do_pam_session(void);
+ void do_pam_set_tty(const char *);
+ void do_pam_setcred(int );
+ void do_pam_chauthtok(void);
+-int do_pam_putenv(char *, char *);
++int do_pam_putenv(char *, const char *);
+ char ** fetch_pam_environment(void);
+ char ** fetch_pam_child_environment(void);
+ void free_pam_environment(char **);
+diff -up openssh-5.0p1/auth-pam.c.pam_selinux openssh-5.0p1/auth-pam.c
+--- openssh-5.0p1/auth-pam.c.pam_selinux	2008-03-11 12:58:25.000000000 +0100
++++ openssh-5.0p1/auth-pam.c	2008-04-30 14:25:21.000000000 +0200
+@@ -1069,7 +1069,7 @@ is_pam_session_open(void)
+  * during the ssh authentication process.
+  */
+ int
+-do_pam_putenv(char *name, char *value)
++do_pam_putenv(char *name, const char *value)
+ {
+ 	int ret = 1;
+ #ifdef HAVE_PAM_PUTENV
+diff -up openssh-5.0p1/openbsd-compat/port-linux.c.pam_selinux openssh-5.0p1/openbsd-compat/port-linux.c
+--- openssh-5.0p1/openbsd-compat/port-linux.c.pam_selinux	2008-04-07 22:01:37.000000000 +0200
++++ openssh-5.0p1/openbsd-compat/port-linux.c	2008-04-30 14:26:17.000000000 +0200
+@@ -34,6 +34,7 @@
+ #include "hostfile.h"
+ #include "auth.h"
+ #include "xmalloc.h"
++#include "servconf.h"
+ 
+ #include <selinux/selinux.h>
+ #include <selinux/flask.h>
+@@ -47,6 +48,7 @@
+ #include <unistd.h>
+ #endif
+ 
++extern ServerOptions options;
+ extern Authctxt *the_authctxt;
+ extern int inetd_flag;
+ extern int rexeced_flag;
+@@ -208,29 +210,38 @@ get_user_context(const char *sename, con
+         return -1;
+ }
+ 
++static void
++ssh_selinux_get_role_level(char **role, const char **level)
++{
++	*role = NULL;
++	*level = NULL;
++	if (the_authctxt) {
++		if (the_authctxt->role != NULL) {
++			char *slash;
++			*role = xstrdup(the_authctxt->role);
++			if ((slash = strchr(*role, '/')) != NULL) {
++				*slash = '\0';
++				*level = slash + 1;
++			}
++		}
++	}
++}
++
+ /* Return the default security context for the given username */
+ static int
+ ssh_selinux_getctxbyname(char *pwname,
+ 	security_context_t *default_sc, security_context_t *user_sc)
+ {
+ 	char *sename, *lvl;
+-	const char *reqlvl = NULL;
+-	char *role = NULL;
++	const char *reqlvl;
++	char *role;
+ 	int r = -1;
+ 	context_t con = NULL;
+ 
+ 	*default_sc = NULL;
+ 	*user_sc = NULL;
+-	if (the_authctxt) {
+-		if (the_authctxt->role != NULL) {
+-			char *slash;
+-			role = xstrdup(the_authctxt->role);
+-			if ((slash = strchr(role, '/')) != NULL) {
+-				*slash = '\0';
+-				reqlvl = slash + 1;
+-			}
+-		}
+-	}
++
++	ssh_selinux_get_role_level(&role, &reqlvl);
+ 
+ #ifdef HAVE_GETSEUSERBYNAME
+ 	if ((r=getseuserbyname(pwname, &sename, &lvl)) != 0) {
+@@ -311,6 +322,36 @@ ssh_selinux_getctxbyname(char *pwname,
+ 	return (r);
+ }
+ 
++/* Setup environment variables for pam_selinux */
++static int
++ssh_selinux_setup_pam_variables(void)
++{
++	const char *reqlvl;
++	char *role;
++	char *use_current;
++	int rv;
++
++	debug3("%s: setting execution context", __func__);
++
++	ssh_selinux_get_role_level(&role, &reqlvl);
++
++	rv = do_pam_putenv("SELINUX_ROLE_REQUESTED", role ? role : "");
++	
++	if (inetd_flag && !rexeced_flag) {
++		use_current = "1";
++	} else {
++		use_current = "";
++		rv = rv || do_pam_putenv("SELINUX_LEVEL_REQUESTED", reqlvl ? reqlvl: "");
++	}
++
++	rv = rv || do_pam_putenv("SELINUX_USE_CURRENT_RANGE", use_current);
++
++	if (role != NULL)
++		xfree(role);
++	
++	return rv;
++}
++
+ /* Set the execution context to the default for the specified user */
+ void
+ ssh_selinux_setup_exec_context(char *pwname)
+@@ -322,6 +363,24 @@ ssh_selinux_setup_exec_context(char *pwn
+ 	if (!ssh_selinux_enabled())
+ 		return;
+ 
++	if (options.use_pam) {
++		/* do not compute context, just setup environment for pam_selinux */
++		if (ssh_selinux_setup_pam_variables()) {
++			switch (security_getenforce()) {
++			case -1:
++				fatal("%s: security_getenforce() failed", __func__);
++			case 0:
++				error("%s: SELinux PAM variable setup failure. Continuing in permissive mode.",
++				    __func__);
++			break;
++			default:
++				fatal("%s: SELinux PAM variable setup failure. Aborting connection.",
++				    __func__);
++			}
++		}
++		return;
++	}
++
+ 	debug3("%s: setting execution context", __func__);
+ 
+ 	r = ssh_selinux_getctxbyname(pwname, &default_ctx, &user_ctx);

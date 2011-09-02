@@ -1,0 +1,64 @@
+diff -up openssh-5.2p1/openbsd-compat/port-linux.c.sesftp openssh-5.2p1/openbsd-compat/port-linux.c
+--- openssh-5.2p1/openbsd-compat/port-linux.c.sesftp	2009-08-12 00:29:37.712368892 +0200
++++ openssh-5.2p1/openbsd-compat/port-linux.c	2009-08-12 00:29:37.732544890 +0200
+@@ -469,4 +469,36 @@ ssh_selinux_setup_pty(char *pwname, cons
+ 		freecon(user_ctx);
+ 	debug3("%s: done", __func__);
+ }
++
++void
++ssh_selinux_change_context(const char *newname)
++{
++	int len, newlen;
++	char *oldctx, *newctx, *cx;
++
++	if (!ssh_selinux_enabled())
++		return;
++
++	if (getcon((security_context_t *)&oldctx) < 0) {
++		logit("%s: getcon failed with %s", __func__, strerror (errno));
++		return;
++	}
++	if ((cx = index(oldctx, ':')) == NULL || (cx = index(cx + 1, ':')) == NULL) {
++		logit ("%s: unparseable context %s", __func__, oldctx);
++		return;
++	}
++
++	newlen = strlen(oldctx) + strlen(newname) + 1;
++	newctx = xmalloc(newlen);
++	len = cx - oldctx + 1;
++	memcpy(newctx, oldctx, len);
++	strlcpy(newctx + len, newname, newlen - len);
++	if ((cx = index(cx + 1, ':')))
++		strlcat(newctx, cx, newlen);
++	debug3("%s: setting context from '%s' to '%s'", __func__, oldctx, newctx);
++	if (setcon(newctx) < 0)
++		logit("%s: setcon failed with %s", __func__, strerror (errno));
++	xfree(oldctx);
++	xfree(newctx);
++}
+ #endif /* WITH_SELINUX */
+diff -up openssh-5.2p1/openbsd-compat/port-linux.h.sesftp openssh-5.2p1/openbsd-compat/port-linux.h
+--- openssh-5.2p1/openbsd-compat/port-linux.h.sesftp	2008-03-26 21:27:21.000000000 +0100
++++ openssh-5.2p1/openbsd-compat/port-linux.h	2009-08-12 00:29:37.733388083 +0200
+@@ -23,6 +23,7 @@
+ int ssh_selinux_enabled(void);
+ void ssh_selinux_setup_pty(char *, const char *);
+ void ssh_selinux_setup_exec_context(char *);
++void ssh_selinux_change_context(const char *);
+ #endif
+ 
+ #endif /* ! _PORT_LINUX_H */
+diff -up openssh-5.2p1/session.c.sesftp openssh-5.2p1/session.c
+--- openssh-5.2p1/session.c.sesftp	2009-08-12 00:29:37.659250161 +0200
++++ openssh-5.2p1/session.c	2009-08-12 00:29:37.729578695 +0200
+@@ -1798,6 +1798,9 @@ do_child(Session *s, const char *command
+ 		argv[i] = NULL;
+ 		optind = optreset = 1;
+ 		__progname = argv[0];
++#ifdef WITH_SELINUX
++		ssh_selinux_change_context("sftpd_t");
++#endif
+ 		exit(sftp_server_main(i, argv, s->pw));
+ 	}
+ 
