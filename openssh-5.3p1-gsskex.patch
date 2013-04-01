@@ -2511,12 +2511,13 @@ diff -up openssh-5.3p1/sshconnect2.c.gsskex openssh-5.3p1/sshconnect2.c
  #endif
  
  void	userauth(Authctxt *, char *);
-@@ -262,6 +315,10 @@ static char *authmethods_get(void);
+@@ -262,6 +315,11 @@ static char *authmethods_get(void);
  
  Authmethod authmethods[] = {
  #ifdef GSSAPI
 +	{"gssapi-keyex",
 +		userauth_gsskeyex,
++		NULL,
 +		&options.gss_authentication,
 +		NULL},
  	{"gssapi-with-mic",

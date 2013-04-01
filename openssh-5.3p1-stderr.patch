@@ -1,0 +1,162 @@
+diff -up openssh-5.3p1/channels.c.stderr openssh-5.3p1/channels.c
+--- openssh-5.3p1/channels.c.stderr	2010-11-15 03:10:59.000000000 +0100
++++ openssh-5.3p1/channels.c	2010-11-15 03:13:13.000000000 +0100
+@@ -839,8 +839,9 @@ channel_pre_open(Channel *c, fd_set *rea
+ 		if (c->extended_usage == CHAN_EXTENDED_WRITE &&
+ 		    buffer_len(&c->extended) > 0)
+ 			FD_SET(c->efd, writeset);
+-		else if (!(c->flags & CHAN_EOF_SENT) &&
+-		    c->extended_usage == CHAN_EXTENDED_READ &&
++		else if (c->efd != -1 && !(c->flags & CHAN_EOF_SENT) &&
++		    (c->extended_usage == CHAN_EXTENDED_READ ||
++		    c->extended_usage == CHAN_EXTENDED_IGNORE) &&
+ 		    buffer_len(&c->extended) < c->remote_window)
+ 			FD_SET(c->efd, readset);
+ 	}
+@@ -1719,7 +1720,9 @@ channel_handle_efd(Channel *c, fd_set *r
+ 				buffer_consume(&c->extended, len);
+ 				c->local_consumed += len;
+ 			}
+-		} else if (c->extended_usage == CHAN_EXTENDED_READ &&
++		} else if (c->efd != -1 &&
++		    (c->extended_usage == CHAN_EXTENDED_READ ||
++		    c->extended_usage == CHAN_EXTENDED_IGNORE) &&
+ 		    (c->detach_close || FD_ISSET(c->efd, readset))) {
+ 			len = read(c->efd, buf, sizeof(buf));
+ 			debug2("channel %d: read %d from efd %d",
+@@ -1732,7 +1735,11 @@ channel_handle_efd(Channel *c, fd_set *r
+ 				    c->self, c->efd);
+ 				channel_close_fd(&c->efd);
+ 			} else {
+-				buffer_append(&c->extended, buf, len);
++				if (c->extended_usage == CHAN_EXTENDED_IGNORE) {
++					debug3("channel %d: discard efd",
++					    c->self);
++				} else
++					buffer_append(&c->extended, buf, len);
+ 			}
+ 		}
+ 	}
+diff -up openssh-5.3p1/session.c.stderr openssh-5.3p1/session.c
+--- openssh-5.3p1/session.c.stderr	2010-11-15 03:10:58.000000000 +0100
++++ openssh-5.3p1/session.c	2010-11-15 03:10:59.000000000 +0100
+@@ -47,6 +47,7 @@
+ #include <arpa/inet.h>
+ 
+ #include <errno.h>
++#include <fcntl.h>
+ #include <grp.h>
+ #ifdef HAVE_PATHS_H
+ #include <paths.h>
+@@ -104,7 +105,7 @@
+ /* func */
+ 
+ Session *session_new(void);
+-void	session_set_fds(Session *, int, int, int, int);
++void	session_set_fds(Session *, int, int, int, int, int);
+ void	session_pty_cleanup(Session *);
+ void	session_proctitle(Session *);
+ int	session_setup_x11fwd(Session *);
+@@ -444,6 +445,9 @@ do_exec_no_pty(Session *s, const char *c
+ #ifdef USE_PIPES
+ 	int pin[2], pout[2], perr[2];
+ 
++	if (s == NULL)
++		fatal("do_exec_no_pty: no session");
++
+ 	/* Allocate pipes for communicating with the program. */
+ 	if (pipe(pin) < 0) {
+ 		error("%s: pipe in: %.100s", __func__, strerror(errno));
+@@ -456,7 +460,8 @@ do_exec_no_pty(Session *s, const char *c
+ 		return -1;
+ 	}
+ 	if (pipe(perr) < 0) {
+-		error("%s: pipe err: %.100s", __func__, strerror(errno));
++		error("%s: pipe err: %.100s", __func__,
++		    strerror(errno));
+ 		close(pin[0]);
+ 		close(pin[1]);
+ 		close(pout[0]);
+@@ -466,22 +471,23 @@ do_exec_no_pty(Session *s, const char *c
+ #else
+ 	int inout[2], err[2];
+ 
++	if (s == NULL)
++		fatal("do_exec_no_pty: no session");
++
+ 	/* Uses socket pairs to communicate with the program. */
+ 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, inout) < 0) {
+ 		error("%s: socketpair #1: %.100s", __func__, strerror(errno));
+ 		return -1;
+ 	}
+ 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, err) < 0) {
+-		error("%s: socketpair #2: %.100s", __func__, strerror(errno));
++		error("%s: socketpair #2: %.100s", __func__,
++		    strerror(errno));
+ 		close(inout[0]);
+ 		close(inout[1]);
+ 		return -1;
+ 	}
+ #endif
+ 
+-	if (s == NULL)
+-		fatal("do_exec_no_pty: no session");
+-
+ 	session_proctitle(s);
+ 
+ 	/* Fork the child. */
+@@ -592,11 +598,8 @@ do_exec_no_pty(Session *s, const char *c
+ 	close(perr[1]);
+ 
+ 	if (compat20) {
+-		if (s->is_subsystem) {
+-			close(perr[0]);
+-			perr[0] = -1;
+-		}
+-		session_set_fds(s, pin[1], pout[0], perr[0], 0);
++		session_set_fds(s, pin[1], pout[0], perr[0],
++		    s->is_subsystem, 0);
+ 	} else {
+ 		/* Enter the interactive session. */
+ 		server_loop(pid, pin[1], pout[0], perr[0]);
+@@ -612,10 +615,8 @@ do_exec_no_pty(Session *s, const char *c
+ 	 * handle the case that fdin and fdout are the same.
+ 	 */
+ 	if (compat20) {
+-		session_set_fds(s, inout[1], inout[1],
+-		    s->is_subsystem ? -1 : err[1], 0);
+-		if (s->is_subsystem)
+-			close(err[1]);
++		session_set_fds(s, inout[1], inout[1], err[1],
++		    s->is_subsystem, 0);
+ 	} else {
+ 		server_loop(pid, inout[1], inout[1], err[1]);
+ 		/* server_loop has closed inout[1] and err[1]. */
+@@ -737,7 +738,7 @@ do_exec_pty(Session *s, const char *comm
+ 	s->ptymaster = ptymaster;
+ 	packet_set_interactive(1);
+ 	if (compat20) {
+-		session_set_fds(s, ptyfd, fdout, -1, 1);
++		session_set_fds(s, ptyfd, fdout, -1, 1, 1);
+ 	} else {
+ 		server_loop(pid, ptyfd, fdout, -1);
+ 		/* server_loop _has_ closed ptyfd and fdout. */
+@@ -2286,7 +2287,8 @@ session_input_channel_req(Channel *c, co
+ }
+ 
+ void
+-session_set_fds(Session *s, int fdin, int fdout, int fderr, int is_tty)
++session_set_fds(Session *s, int fdin, int fdout, int fderr, int ignore_fderr,
++    int is_tty)
+ {
+ 	if (!compat20)
+ 		fatal("session_set_fds: called for proto != 2.0");
+@@ -2298,7 +2300,7 @@ session_set_fds(Session *s, int fdin, in
+ 		fatal("no channel for session %d", s->self);
+ 	channel_set_fds(s->chanid,
+ 	    fdout, fdin, fderr,
+-	    fderr == -1 ? CHAN_EXTENDED_IGNORE : CHAN_EXTENDED_READ,
++	    ignore_fderr ? CHAN_EXTENDED_IGNORE : CHAN_EXTENDED_READ,
+ 	    1, is_tty, CHAN_SES_WINDOW_DEFAULT);
+ }
+ 

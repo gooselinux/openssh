@@ -69,7 +69,7 @@
 Summary: An open source implementation of SSH protocol versions 1 and 2
 Name: openssh
 Version: 5.3p1
-Release: 20%{?dist}%{?rescue_rel}
+Release: 20%{?dist}%{?rescue_rel}.3
 URL: http://www.openssh.com/portable.html
 #URL1: http://pamsshauth.sourceforge.net
 #Source0: ftp://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-%{version}.tar.gz
@@ -114,6 +114,7 @@ Patch75: openssh-5.3p1-strictalias.patch
 Patch76: openssh-5.3p1-595935.patch
 Patch77: openssh-5.3p1-x11.patch
 Patch78: openssh-5.3p1-authorized-keys-command.patch
+Patch79: openssh-5.3p1-stderr.patch
 
 License: BSD
 Group: Applications/Internet
@@ -276,6 +277,7 @@ popd
 %patch76 -p1 -b .bz595935
 %patch77 -p1 -b .x11
 %patch78 -p1 -b .akc
+%patch79 -p1 -b .stderr
 
 autoreconf
 
@@ -541,6 +543,12 @@ fi
 %endif
 
 %changelog
+* Fri Nov 19 2010 Jan F. Chadima <jchadima@redhat.com> - 5.5p1-20.3
+- upgrade gss key exchange patch (#655043)
+
+* Mon Nov 15 2010 Jan F. Chadima <jchadima@redhat.com> - 5.5p1-20.2
+- repair bad stderr handling (#651820)
+
 * Thu Aug 12 2010 Jan F. Chadima <jchadima@redhat.com> - 5.5p1-20
 - set correct socket name length in abstract socket (#621691)
 
